@@ -41,12 +41,6 @@ struct st_thread_pool {
     pthread_t worker_threads[WOKER_THREAD_NUM];
 } typedef thread_pool_t;
 
-// struct st_req_pack {
-//     int service_id;
-//     int client_fd;
-//     char message[BUFF_SIZE + 1];
-// } typedef req_pack;
-
 struct st_client_session {
     int fd;
     char recv_buf[BUFF_SIZE];
