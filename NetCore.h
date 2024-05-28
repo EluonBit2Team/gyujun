@@ -232,24 +232,6 @@ void disconnect_client(epoll_net_core* server_ptr, int client_fd)
     printf("disconnect:%d\n", client_fd);
 }
 
-// int input_handler (epoll_net_core* server_ptr, int client_fd, int recv_len) {
-//     /* !! 서비스 핸들 테스트 용 팩 작성 !! */
-//     req_pack req;
-//     req.service_id = ECHO_SERVICE_FUNC;
-//     req.client_fd = client_fd;
-//     memcpy(req.message, server_ptr->client_sessions[client_fd].recv_buf, recv_len);
-//     req.message[recv_len] = '\0';
-//     /*------------------------------------*/
-
-//     if (server_ptr->function_array[ECHO_SERVICE_FUNC] == NULL)
-//     {
-//         printf("invalid func idx\n");
-//         return -1;
-//     }
-
-//     server_ptr->function_array[req.service_id](server_ptr, &req);
-// }
-
 int run_server(epoll_net_core* server_ptr) {
     server_ptr->is_run = TRUE;
     struct epoll_event temp_epoll_event;
