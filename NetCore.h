@@ -24,313 +24,71 @@
 #define WOKER_THREAD_NUM 4
 #define MAX_TASK_SIZE 100
 
+// 워커스레드가 처리할 일감을 포장한 구조체
 struct st_task {
-    int service_id;
-    int req_client_fd;
-    char buf[BUFF_SIZE];
-    int task_data_len;
+    int service_id;     // 일감의 종류(에코인지 뭔지...)
+    int req_client_fd;  // 일감 요청한 클라이언트 fd
+    char buf[BUFF_SIZE];// 처리할 일감
+    int task_data_len;  // 처리할 일감이 어느정도 크기인지
 } typedef task;
 
+// 스레드풀.
 struct st_thread_pool {
 
-    pthread_mutex_t task_mutex;
-    pthread_cond_t task_cond;
-    int task_cnt;
-    task tasks[MAX_TASK_SIZE];
+    // ----- 스레드간 일감(테스크)을 동기화 처리할 큐(비슷한 무언가) -----
+    pthread_mutex_t task_mutex; // 락
+    pthread_cond_t task_cond;   // 대기중인 스레드를 깨워줄 컨디션벨류
+    int task_cnt;               // 큐 비스므리한 방식으로 쓰기 위한 카운터
+    task tasks[MAX_TASK_SIZE];  // 일감
+    // -------------------------------------------------------
     
-    pthread_t worker_threads[WOKER_THREAD_NUM];
+    pthread_t worker_threads[WOKER_THREAD_NUM]; // 워커스레드들
 } typedef thread_pool_t;
 
 struct st_client_session {
-    int fd;
-    char recv_buf[BUFF_SIZE];
+    int fd;                     // 세션 fd
+    char recv_buf[BUFF_SIZE];   // 유저별 소켓으로 받은 데이터를 저장할 버퍼(일감 가공 전 날것의 데이터)
     char send_buf[BUFF_SIZE];
-    int send_data_size;
+    int send_data_size;         // 유저로부터 
 } typedef client_session;
 
-struct st_epoll_net_core;
-typedef void (*func_ptr)(struct st_epoll_net_core*, task*);
+struct st_epoll_net_core;   // 전방선언
+typedef void (*func_ptr)(struct st_epoll_net_core*, task*); // 서비스함수포인터 타입 지정.
 typedef struct st_epoll_net_core {
-    int is_run;
-    int listen_fd;
+    int is_run;     // 서버 내릴때 flase(지금은)
+    int listen_fd;  // 서버 리슨용 소켓 fd
 
-    func_ptr function_array[SERVICE_FUNC_NUM];
+    func_ptr function_array[SERVICE_FUNC_NUM]; // 서비스 배열
     
-    client_session client_sessions[MAX_CLIENT_NUM];
-    struct sockaddr_in listen_addr;
+    client_session client_sessions[MAX_CLIENT_NUM]; // 연결된 클라이언트들 관리할 세션 배열
+    struct sockaddr_in listen_addr; // 리슨용 소켓 주소 담는 자료형
     
-    int epoll_fd;
+    int epoll_fd; 
     struct epoll_event* epoll_events;
 
-    thread_pool_t thread_pool;
+    thread_pool_t thread_pool; // 서버에서 사용할 워커스레드
 } epoll_net_core;
 
+// 서버 세팅 함수들 -> main에서 호출하여 조작.
+int init_server(epoll_net_core* server_ptr) ;
+int run_server(epoll_net_core* server_ptr) ;
+void down_server(epoll_net_core* server_ptr);
 
-void enqueue_task(thread_pool_t* thread_pool, int req_client_fd, int req_service_id, char* org_buf, int org_data_size)
-{
-    pthread_mutex_lock(&thread_pool->task_mutex);
+// 스레드 풀 관련 초기화
+void init_worker_thread(epoll_net_core* server_ptr, thread_pool_t* thread_pool_t_ptr);
+// 워커스레드가 무한반 복할 루틴.
+void* work_routine(void *ptr);
+// (워커스레드들이)할 일의 정보를 담으면, 동기화 기법(뮤텍스)을 고려해서 담는 함수.
+void enqueue_task(thread_pool_t* thread_pool, int req_client_fd, int req_service_id, char* org_buf, int org_data_size);
+// 워커스레드에서 할 일을 꺼낼때(des에 복사) 쓰는 함수.
+int deqeueu_and_get_task(thread_pool_t* thread_pool, task* des);
 
-    if (thread_pool->task_cnt == MAX_TASK_SIZE)
-    {
-        pthread_mutex_unlock(&thread_pool->task_mutex);
-        return ;
-    }
+// accept시 동작 처리 함수
+int accept_client(epoll_net_core* server_ptr); 
+void disconnect_client(epoll_net_core* server_ptr, int client_fd);
+void set_sock_nonblocking_mode(int sockFd) ;
 
-    task* queuing_task = &thread_pool->tasks[thread_pool->task_cnt++];
-    //printf("%d task enqueue\n", thread_pool->task_cnt);
-    queuing_task->service_id = req_service_id;
-    queuing_task->req_client_fd = req_client_fd;
-    memcpy(queuing_task->buf, org_buf, org_data_size);
-    queuing_task->task_data_len = org_data_size;
-
-    pthread_cond_signal(&thread_pool->task_cond);
-    pthread_mutex_unlock(&thread_pool->task_mutex);
-}
-
-int deqeueu_and_get_task(thread_pool_t* thread_pool, task* des)
-{
-    pthread_mutex_lock(&thread_pool->task_mutex);
-
-    if (thread_pool->task_cnt == 0)
-    {
-        pthread_mutex_unlock(&thread_pool->task_mutex);
-        return FALSE;
-    }
-
-    //printf("%d task dequeue\n", thread_pool->task_cnt);
-    task* dequeuing_task = &thread_pool->tasks[--thread_pool->task_cnt];
-    des->req_client_fd = dequeuing_task->req_client_fd;
-    des->service_id = dequeuing_task->service_id;
-    memcpy(des->buf, dequeuing_task->buf, dequeuing_task->task_data_len);
-    des->task_data_len = dequeuing_task->task_data_len;
-    //thread_pool->task_cnt--;
-
-    pthread_mutex_unlock(&thread_pool->task_mutex);
-    return TRUE;
-}
-
-void* work_routine(void *ptr)
-{
-    epoll_net_core* server_ptr = (epoll_net_core *)ptr;
-    thread_pool_t* thread_pool = &server_ptr->thread_pool;
-    while (1) {
-        //printf("thread wating...\n");
-        pthread_mutex_lock(&thread_pool->task_mutex);
-        while (thread_pool->task_cnt == 0) {
-            pthread_cond_wait(&thread_pool->task_cond, &thread_pool->task_mutex);
-        }
-        //printf("thread wakeup\n");
-        pthread_mutex_unlock(&thread_pool->task_mutex);
-
-        task temp_task;
-        //printf("thread deqeueu_and_get_task\n");
-        if (deqeueu_and_get_task(thread_pool, &temp_task) == TRUE)
-        {
-            server_ptr->function_array[temp_task.service_id](server_ptr, &temp_task);
-        }
-    }
-    return NULL;
-}
-
-void init_worker_thread(epoll_net_core* server_ptr, thread_pool_t* thread_pool_t_ptr)
-{
-    pthread_mutex_init(&thread_pool_t_ptr->task_mutex, NULL);
-    pthread_cond_init(&thread_pool_t_ptr->task_cond, NULL);
-    for (int i = 0; i < WOKER_THREAD_NUM; i++)
-    {
-        pthread_create(&thread_pool_t_ptr->worker_threads[i], NULL, work_routine, server_ptr);
-    }
-}
-
-
-void echo_service(epoll_net_core* server_ptr, task* task) {
-    // 보낸사람 이외에 전부 출력.
-    for (int i = 0; i < MAX_CLIENT_NUM; i++)
-    {
-        if (server_ptr->client_sessions[i].fd == -1
-            || task->req_client_fd == server_ptr->client_sessions[i].fd)
-        {
-            continue ;
-        }
-
-        struct epoll_event temp_event;
-        temp_event.events = EPOLLOUT | EPOLLET;
-        temp_event.data.fd = server_ptr->client_sessions[i].fd;
-        if (epoll_ctl(server_ptr->epoll_fd, EPOLL_CTL_MOD, server_ptr->client_sessions[i].fd, &temp_event) == -1) {
-            perror("epoll_ctl: add");
-            close(task->req_client_fd);
-        }
-        // 버퍼에 데이터를 저장
-        memcpy(server_ptr->client_sessions[i].send_buf, task->buf, task->task_data_len);
-        server_ptr->client_sessions[i].send_data_size = task->task_data_len;
-    }
-}
-
-void set_sock_nonblocking_mode(int sockFd) {
-    int flag = fcntl(sockFd, F_GETFL, 0);
-    fcntl(sockFd, F_SETFL, flag | O_NONBLOCK);
-}
-
-
-int init_server(epoll_net_core* server_ptr) {
-    for (int i = 0; i < MAX_CLIENT_NUM; i++)
-    {
-        server_ptr->client_sessions[i].fd = -1;
-        server_ptr->client_sessions[i].send_data_size = -1;
-    }
-
-    server_ptr->is_run = FALSE;
-    server_ptr->listen_addr.sin_family = AF_INET;
-    server_ptr->listen_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_ptr->listen_addr.sin_port = htons(PORT);
-
-    for (int i = 0; i < SERVICE_FUNC_NUM; i++)
-    {
-        server_ptr->function_array[i] = NULL;
-    }
-    server_ptr->function_array[ECHO_SERVICE_FUNC] = echo_service;
-    server_ptr->listen_fd = socket(PF_INET, SOCK_STREAM, 0);
-    if (server_ptr->listen_fd < 0)
-    {
-        printf("listen sock assignment error: \n", errno);
-    }
-    set_sock_nonblocking_mode(server_ptr->listen_fd);
-}
-
-int accept_client(epoll_net_core* server_ptr) {
-    struct epoll_event temp_event;
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_size = client_addr_size = sizeof(client_addr);
-    int client_sock = accept(server_ptr->listen_fd, (struct sockaddr*)&(client_addr), &client_addr_size);
-    if (client_sock < 0) {
-        printf("accept error: \n", errno);
-    }
-
-    set_sock_nonblocking_mode(client_sock);
-
-    server_ptr->client_sessions[client_sock].fd = client_sock;
-    memset(server_ptr->client_sessions[client_sock].recv_buf, 0, BUFF_SIZE);
-    memset(server_ptr->client_sessions[client_sock].send_buf, 0, BUFF_SIZE);
-
-    temp_event.data.fd = client_sock;
-    // ✨ 엣지트리거방식의(EPOLLIN) 입력 이벤트 대기 설정(EPOLLET)
-    temp_event.events = EPOLLIN | EPOLLET;
-    epoll_ctl(server_ptr->epoll_fd, EPOLL_CTL_ADD, client_sock, &temp_event);
-    printf("accept \n client", client_sock);
-}
-
-void disconnect_client(epoll_net_core* server_ptr, int client_fd)
-{
-    epoll_ctl(server_ptr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
-    close(client_fd);
-    printf("disconnect:%d\n", client_fd);
-}
-
-int run_server(epoll_net_core* server_ptr) {
-    server_ptr->is_run = TRUE;
-    struct epoll_event temp_epoll_event;
-    server_ptr->epoll_fd = epoll_create1(0);
-    //server_ptr->epoll_fd = epoll_create(EPOLL_SIZE);
-    if (server_ptr->epoll_fd < 0)
-    {
-        printf("epoll_fd Error : %d\n", errno);
-    }
-    server_ptr->epoll_events = malloc(sizeof(struct epoll_event) * EPOLL_SIZE);
-
-    init_worker_thread(server_ptr, &server_ptr->thread_pool);
-    int rt_val = bind(server_ptr->listen_fd, 
-        (struct sockaddr*) &server_ptr->listen_addr, 
-        sizeof(server_ptr->listen_addr));
-    if (rt_val < 0) {
-        printf("bind Error : %d\n", errno);
-    }
-
-    rt_val = listen(server_ptr->listen_fd, SOMAXCONN);
-    if (rt_val < 0) {
-        printf("listen Error : %d\n", errno);
-    }
-    set_sock_nonblocking_mode(server_ptr->listen_fd);
-
-    temp_epoll_event.events = EPOLLIN;
-    temp_epoll_event.data.fd = server_ptr->listen_fd;
-    rt_val = epoll_ctl(server_ptr->epoll_fd, EPOLL_CTL_ADD, server_ptr->listen_fd, &temp_epoll_event);
-    if (rt_val < 0) {
-        printf("epoll_ctl Error : %d\n", errno);
-    }
-
-    while (server_ptr->is_run == TRUE) {
-        int occured_event_cnt = epoll_wait(
-            server_ptr->epoll_fd, server_ptr->epoll_events, 
-            EPOLL_SIZE, -1);
-        if (occured_event_cnt < 0) {
-            printf("epoll_wait Error : %d\n", errno);
-        }
-        
-        for (int i = 0; i < occured_event_cnt; i++) {
-            if (server_ptr->epoll_events[i].data.fd == server_ptr->listen_fd) {
-                accept_client(server_ptr);
-                printf("accept\n");
-            }
-            else if (server_ptr->epoll_events[i].events & EPOLLIN) {
-                int client_fd = server_ptr->epoll_events[i].data.fd;
-                //printf("some thing in from :%d\n", client_fd);
-                int input_size = read(client_fd, server_ptr->client_sessions[client_fd].recv_buf, BUFF_SIZE);
-                if (input_size == 0)
-                {
-                    printf("input_size == 0\n");
-                    disconnect_client(server_ptr, client_fd);
-                }
-                else if (input_size < 0)
-                {
-                    // errno EAGAIN?
-                    printf("input_size < 0\n");
-                }
-                else
-                {
-                    printf("input_handler\n");
-                    enqueue_task(
-                        &server_ptr->thread_pool, client_fd, ECHO_SERVICE_FUNC, 
-                        server_ptr->client_sessions[client_fd].recv_buf, input_size);
-                    //input_handler(server_ptr, client_fd, input_size);
-                }
-            }
-            else if (server_ptr->epoll_events[i].events & EPOLLOUT) {
-                int client_fd = server_ptr->epoll_events[i].data.fd;
-                //printf("some thing can send to:%d\n", client_fd);
-                ssize_t sent = send(
-                    client_fd, 
-                    server_ptr->client_sessions[client_fd].send_buf, 
-                    server_ptr->client_sessions[client_fd].send_data_size, 0);
-                if (sent == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    } 
-                    else {
-                        perror("send");
-                        close(server_ptr->epoll_events[i].data.fd);
-                    }
-                }
-                struct epoll_event temp_event;
-                temp_event.events = EPOLLIN | EPOLLET;
-                temp_event.data.fd = server_ptr->epoll_events[i].data.fd;
-                if (epoll_ctl(server_ptr->epoll_fd, EPOLL_CTL_MOD, server_ptr->epoll_events[i].data.fd, &temp_event) == -1) {
-                    perror("epoll_ctl: del");
-                    close(server_ptr->epoll_events[i].data.fd);
-                }
-            }
-            else {
-                printf("?\n");
-            }
-        }
-    }
-}
-
-void down_server(epoll_net_core* server_ptr)
-{
-    server_ptr->is_run = FALSE;
-    close(server_ptr->listen_fd);
-    close(server_ptr->epoll_fd);
-    free(server_ptr->epoll_events);
-}
+// ✨ 서비스 함수. 이런 형태의 함수들을 추가하여 서비스 추가. ✨
+void echo_service(epoll_net_core* server_ptr, task* task) ;
 
 #endif
