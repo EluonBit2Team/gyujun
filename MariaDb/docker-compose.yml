@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  mariadb:
+    image: mariadb:10.5
+    container_name: mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: 1q2w3e4r
+      MYSQL_DATABASE: 1q2w3e4r
+      MYSQL_USER: gyeon
+      MYSQL_PASSWORD: 1q2w3e4r
+    volumes:
+      - ./config/my.cnf:/etc/mysql/my.cnf
+      - ./data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+    ports:
+      - "3307:3306"
+    networks:
+      - mariadb-network
+
+networks:
+  mariadb-network:
+    driver: bridge
+
